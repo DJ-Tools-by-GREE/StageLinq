@@ -2,16 +2,20 @@
 
 TypeScript library to connect to Denon DJ hardware via the StageLinq protocol.
 
+This fork publishes as `@gree44/stagelinq` and includes upstream v3.5.7 plus
+telemetry used by StageLinq-WebView. The merge history, compatibility findings
+and validation are recorded in [memory.md](memory.md).
+
 ## Installation
 
 ```bash
-npm install stagelinq
+npm install @gree44/stagelinq
 ```
 
 ## Quick Start
 
 ```ts
-import { StageLinq } from 'stagelinq';
+import { StageLinq } from '@gree44/stagelinq';
 
 const stagelinq = new StageLinq({ downloadDbSources: true });
 
@@ -65,7 +69,7 @@ await stagelinq.connect();
 ### Instance-based (recommended)
 
 ```ts
-import { StageLinq } from 'stagelinq';
+import { StageLinq } from '@gree44/stagelinq';
 
 const stagelinq = new StageLinq({
   downloadDbSources: true,
@@ -99,7 +103,7 @@ await stagelinq.disconnect();
 ### Static class
 
 ```ts
-import { StageLinq } from 'stagelinq';
+import { StageLinq } from '@gree44/stagelinq';
 
 StageLinq.options = { downloadDbSources: true };
 
@@ -187,7 +191,7 @@ npm run test:watch    # Watch mode
 npm run test:coverage # Coverage report
 ```
 
-**205 tests** across 14 test files.
+**265 tests** across 23 test files.
 
 ## Documentation
 
@@ -225,9 +229,13 @@ This library incorporates code and ideas from other StageLinq implementations:
 ## Related Packages
 
 - [alphatheta-connect](https://github.com/chrisle/alphatheta-connect) — Pioneer Pro DJ Link integration
+- [djay-connect](https://github.com/chrisle/djay-connect) — djay Pro track change events from NowPlaying.txt
 - [metadata-connect](https://github.com/chrisle/metadata-connect) — Audio metadata extraction with partial file reads
+- [onelibrary-connect](https://github.com/chrisle/onelibrary-connect) — Rekordbox OneLibrary (exportLibrary.db) database access
 - [rekordbox-connect](https://github.com/chrisle/rekordbox-connect) — Rekordbox database integration
-- [serato-connect](https://github.com/chrisle/serato-connect) — Serato DJ integration
+- [serato-connect](https://github.com/chrisle/serato-connect) — Serato DJ history, cues, beatgrids, crates, and library
+- [traktor-connect](https://github.com/chrisle/traktor-connect) — Traktor Pro track metadata via OGG Vorbis broadcast
+- [virtualdj-connect](https://github.com/chrisle/virtualdj-connect) — VirtualDJ track change events from M3U history
 
 These libraries power [Now Playing](https://nowplayingapp.com) — a real-time track display app for DJs and streamers.
 

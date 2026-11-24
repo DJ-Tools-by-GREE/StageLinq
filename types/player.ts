@@ -20,6 +20,18 @@ export interface PlayerStatus {
   title: string;
   trackNetworkPath: string;
 
+  /** Genre as tagged on the track. */
+  genre: string;
+  /** Musical key as Engine displays it, e.g. 'Am' or '8A'. */
+  key: string;
+  /** Raw track length reported by the device. Some firmware reports samples. */
+  trackLength: number;
+  /**
+   * Engine's own URI for the track. For streaming tracks this names the
+   * service, which is the only place a Denon player says which one it is.
+   */
+  trackUri: string;
+
   source: string;
   dbSourceName: string;
   trackPath: string;
@@ -40,4 +52,8 @@ export interface PlayerLayerState {
   songLoaded?: boolean;
   title?: string;
   trackNetworkPath?: string;
+  genre?: string;
+  key?: string;
+  trackLength?: number;
+  trackUri?: string;
 }

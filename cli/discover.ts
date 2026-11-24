@@ -8,7 +8,7 @@
  */
 
 import { StageLinqListener } from '../network';
-import { EAAS, formatToken } from '../';
+import { EAAS, formatToken } from '../index';
 import { ConnectionInfo } from '../types';
 
 require('console-stamp')(console, {

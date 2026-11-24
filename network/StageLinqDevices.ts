@@ -2,8 +2,9 @@ import { ConnectionInfo, IpAddress, PlayerStatus, ServiceMessage, StageLinqOptio
 import { EventEmitter } from 'events';
 import { NetworkDevice } from '.';
 import { Player } from '../devices/Player';
-import { formatToken, sleep } from '../utils';
+import { formatToken } from '../utils';
 import { BeatInfo, FileTransfer, StateData, StateMap } from '../services';
+import type { BeatData } from '../services';
 import type { Logger } from '../types/logger';
 import { noopLogger } from '../types/logger';
 import { Databases } from '../Databases';
@@ -21,6 +22,14 @@ interface StageLinqDevice {
 const WAIT_FOR_DEVICES_INITIAL_MS = 3000;
 // Max poll interval after backoff when no devices are found
 const WAIT_FOR_DEVICES_MAX_MS = 30000;
+// Base linear backoff between device connection attempts (attempt N waits
+// N * this). A device that is still booting needs real time between tries.
+const RETRY_BACKOFF_MS = 500;
+// How long a device stays in FAILED before a fresh discovery message is
+// allowed to retry it. Without this a device that is briefly unreachable at
+// startup is ignored for the entire session, so its channel faders never
+// reach the mix processor and the overlay stops respecting them (NP3-310).
+const RETRY_AFTER_FAILURE_MS = 10000;
 
 export declare interface StageLinqDevices {
   on(event: 'trackLoaded', listener: (status: PlayerStatus) => void): this;
@@ -28,6 +37,7 @@ export declare interface StageLinqDevices {
   on(event: 'nowPlaying', listener: (status: PlayerStatus) => void): this;
   on(event: 'connected', listener: (connectionInfo: ConnectionInfo) => void): this;
   on(event: 'message', listener: (connectionInfo: ConnectionInfo, message: ServiceMessage<StateData>) => void): this;
+  on(event: 'beatMessage', listener: (connectionInfo: ConnectionInfo, data: BeatData) => void): this;
   on(event: 'ready', listener: () => void): this;
 }
 
@@ -42,12 +52,18 @@ export class StageLinqDevices extends EventEmitter {
   private _databases: Databases;
   private devices: Map<IpAddress, StageLinqDevice> = new Map();
   private discoveryStatus: Map<string, ConnectionStatus> = new Map();
+  /** When each FAILED device last failed, for the retry cooldown. */
+  private failedAt: Map<string, number> = new Map();
+  /** Ignored mixers we have already warned about, so the log fires once each. */
+  private loggedIgnoredMixers: Set<string> = new Set();
   private options: StageLinqOptions;
   private logger: Logger;
 
   private deviceWatchTimeout: NodeJS.Timeout | null = null;
   private deviceWatchInterval: number = WAIT_FOR_DEVICES_INITIAL_MS;
   private stateMapCallback: { connectionInfo: ConnectionInfo, networkDevice: NetworkDevice }[] = [];
+  private session = new AbortController();
+  private connectingDevices = new Set<NetworkDevice>();
 
   constructor(options: StageLinqOptions, logger: Logger = noopLogger) {
     super();
@@ -64,6 +80,9 @@ export class StageLinqDevices extends EventEmitter {
    * @param connectionInfo Connection info.
    */
   async handleDevice(connectionInfo: ConnectionInfo) {
+    if (this.session.signal.aborted) {
+      this.session = new AbortController();
+    }
     this.logger.trace(this.showDiscoveryStatus(connectionInfo));
 
     // Ignore this discovery message if we've already connected to it,
@@ -72,21 +91,70 @@ export class StageLinqDevices extends EventEmitter {
       || this.isConnecting(connectionInfo)
       || this.isFailed(connectionInfo)
       || this.isIgnored(connectionInfo)) return;
+    if (!this.deviceWatchTimeout) {
+      this.scheduleDeviceWatch();
+    }
 
-    this.connectToDevice(connectionInfo);
+    // Deliberately not awaited — discovery must stay responsive — but the
+    // rejection has to be handled here or a failed connection surfaces as an
+    // unhandled promise rejection instead of a logged, recoverable failure.
+    void this.connectToDevice(connectionInfo).catch((e) => {
+      this.logger.warn(
+        `Giving up on ${this.deviceId(connectionInfo)} for now ` +
+        `(retry in ${RETRY_AFTER_FAILURE_MS / 1000}s): ${e}`);
+    });
   }
 
   /**
    * Disconnect from all connected devices
    */
   disconnectAll() {
+    this.session.abort();
     if (this.deviceWatchTimeout) {
       clearTimeout(this.deviceWatchTimeout);
       this.deviceWatchTimeout = null;
     }
+    const networkDevices = new Set(this.connectingDevices);
     for (const device of this.devices.values()) {
-      device.networkDevice.disconnect();
+      networkDevices.add(device.networkDevice);
     }
+    for (const networkDevice of networkDevices) {
+      this.closeDevice(networkDevice);
+    }
+    this.connectingDevices.clear();
+    this.devices.clear();
+    this.discoveryStatus.clear();
+    this.failedAt.clear();
+    this.stateMapCallback = [];
+    this.deviceWatchInterval = WAIT_FOR_DEVICES_INITIAL_MS;
+  }
+
+  private closeDevice(networkDevice: NetworkDevice) {
+    try {
+      networkDevice.disconnect();
+    } catch (e) {
+      // An in-flight connection may not have a socket yet. Its completion also
+      // checks the session and closes any socket that arrives after shutdown.
+      this.logger.debug(`Could not close device connection: ${e}`);
+    }
+  }
+
+  private stopIfCancelled(networkDevice: NetworkDevice, signal: AbortSignal) {
+    if (!signal.aborted) return false;
+    this.closeDevice(networkDevice);
+    return true;
+  }
+
+  private retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const timeout = setTimeout(finish, milliseconds);
+      signal.addEventListener('abort', finish, { once: true });
+    });
   }
 
   get databases() {
@@ -123,27 +191,24 @@ export class StageLinqDevices extends EventEmitter {
   ////////////////////////////////////////////////////////////////////////////
 
   /**
-   * Waits for all devices to be connected with databases downloaded
-   * then connects to the StateMap.
+   * Waits for all devices to finish connecting, then connects to the StateMap.
    *
-   * Explained:
+   * Why wait for all devices? If there are two SC6000 players on the network
+   * both send broadcast packets, so their StateMap could be initialized at any
+   * time in any order. Waiting until none are still CONNECTING keeps that
+   * ordering predictable.
    *
-   * Why wait for all devices? Because a race condition exists when using the
-   * database methods.
+   * Note this no longer waits for database downloads. It used to: the download
+   * was awaited inside connectToDevice, so a device stayed CONNECTING until its
+   * database landed, which closed a race where player 2 could be asked about a
+   * track living on player 1's USB drive before player 1's database was ready.
    *
-   * If there are two SC6000 players on the network both will be sending
-   * broadcast packets and so their StateMap can be initialized at any time
-   * in any order.
-   *
-   * Assume you have player 1 and player 2 linked. Player 2 has a track that
-   * is loaded from a USB drive plugged into player 1. Player 2 will be
-   * ready before Player 1 because Player 1 will still be downloading a large
-   * database. The race condition is if you try to read from the database on
-   * the track that is plugged into Player 1 that isn't ready yet.
-   *
-   * This method prevents that by waiting for both players to connect and
-   * have their databases loaded before initializing the StateMap.
-   *
+   * That cost every user a delayed first track — the whole transfer runs before
+   * any track can be detected — to protect metadata that is not needed for
+   * detection at all. The download now runs in the background, and the race it
+   * guarded resolves the other way: a track played before its database arrives
+   * is emitted without a record label instead of arriving late. Callers reading
+   * the database must tolerate it not being there yet.
    */
   private waitForAllDevices() {
     this.logger.debug('Start watching for devices ...');
@@ -151,7 +216,10 @@ export class StageLinqDevices extends EventEmitter {
   }
 
   private scheduleDeviceWatch() {
-    this.deviceWatchTimeout = setTimeout(async () => {
+    const signal = this.session.signal;
+    this.deviceWatchTimeout = setTimeout(() => {
+      if (signal.aborted) return;
+      this.deviceWatchTimeout = null;
       // Check if any devices are still connecting.
       const values = Array.from(this.discoveryStatus.values());
       const foundDevices = values.length >= 1;
@@ -162,8 +230,19 @@ export class StageLinqDevices extends EventEmitter {
         this.logger.debug('All devices found!');
         this.logger.debug(`Devices found: ${values.length} ${JSON.stringify(entries)}`);
         this.deviceWatchTimeout = null;
-        for (const cb of this.stateMapCallback) {
-          this.setupStateMap(cb.connectionInfo, cb.networkDevice);
+        const callbacks = this.stateMapCallback.splice(0);
+        for (const cb of callbacks) {
+          // setupStateMap connects to the device's StateMap service, which can
+          // time out if the device dropped off the network between discovery
+          // and here. This runs detached inside a setTimeout, so an unhandled
+          // rejection would surface as an uncaught error and crash the app
+          // (NP3-447). Log and move on; the device is retried on rediscovery.
+          void this.setupStateMap(cb.connectionInfo, cb.networkDevice, signal)
+            .catch((e) => {
+              if (signal.aborted) return;
+              this.logger.warn(`Could not set up StateMap for ` +
+                `${this.deviceId(cb.connectionInfo)}: ${e}`);
+            });
         }
         this.emit('ready');
       } else {
@@ -197,26 +276,43 @@ export class StageLinqDevices extends EventEmitter {
    * @returns
    */
   private async connectToDevice(connectionInfo: ConnectionInfo) {
+    const signal = this.session.signal;
+    if (signal.aborted) return;
 
     // Mark this device as connecting.
     this.discoveryStatus.set(this.deviceId(connectionInfo), ConnectionStatus.CONNECTING);
 
+    const maxRetries = this.options.maxRetries ?? 3;
     let attempt = 1;
-    while (attempt < (this.options.maxRetries ?? 3)) {
+    while (attempt <= maxRetries && !signal.aborted) {
+      const networkDevice = new NetworkDevice(connectionInfo, this.logger);
+      this.connectingDevices.add(networkDevice);
       try {
 
         // Connect to the device.
         this.logger.info(`Connecting to ${this.deviceId(connectionInfo)}. ` +
-          `Attempt ${attempt}/${this.options.maxRetries}`);
-        const networkDevice = new NetworkDevice(connectionInfo, this.logger);
+          `Attempt ${attempt}/${maxRetries}`);
         await networkDevice.connect();
+        if (this.stopIfCancelled(networkDevice, signal)) return;
 
         // Setup file transfer service
-        await this.setupFileTransferService(networkDevice, connectionInfo);
+        await this.setupFileTransferService(networkDevice, connectionInfo, signal);
+        if (this.stopIfCancelled(networkDevice, signal)) return;
 
-        // Download the database
+        // Download the database, but do not wait for it. StateMap is set up
+        // immediately after this, so awaiting a multi-megabyte transfer delays
+        // the first detected track by the length of the download. The database
+        // only carries metadata the wire does not (the record label), so tracks
+        // that play before it lands are emitted without it rather than late.
+        //
+        // A failure here must not fail the connection either: it would send a
+        // perfectly good device back through the retry loop over metadata.
         if (this.options.enableFileTranfer && this.options.downloadDbSources) {
-          await this.downloadDatabase(networkDevice, connectionInfo);
+          void this.downloadDatabase(networkDevice, connectionInfo)
+            .catch((e) => {
+              this.logger.warn(`Could not download database from ` +
+                `${this.deviceId(connectionInfo)}: ${e}`);
+            });
         }
 
         // Setup other services that should be initialized before StateMap here.
@@ -235,25 +331,38 @@ export class StageLinqDevices extends EventEmitter {
 
         return; // Don't forget to return!
       } catch (e) {
+        this.closeDevice(networkDevice);
+        if (signal.aborted) return;
 
-        // Failed connection. Sleep then retry.
+        // Failed connection. Sleep then retry. The await matters: without it
+        // the backoff is a no-op and every attempt fires in the same tick, so
+        // a device that just needs a moment to settle burns all its retries in
+        // microseconds and is marked FAILED.
         this.logger.warn(`Could not connect to ${this.deviceId(connectionInfo)} ` +
-          `(${attempt}/${this.options.maxRetries}): ${e}`);
+          `(${attempt}/${maxRetries}): ${e}`);
         attempt += 1;
-        sleep(500);
+        if (attempt <= maxRetries) {
+          await this.retryDelay(RETRY_BACKOFF_MS * (attempt - 1), signal);
+        }
+      } finally {
+        this.connectingDevices.delete(networkDevice);
       }
     }
-    // We failed 3 times. Throw exception.
+    if (signal.aborted) return;
+    // Every attempt failed. Mark it and stamp the time so the cooldown in
+    // isFailed() can let a later discovery message retry the device.
     this.discoveryStatus.set(this.deviceId(connectionInfo), ConnectionStatus.FAILED);
+    this.failedAt.set(this.deviceId(connectionInfo), Date.now());
     throw new Error(`Could not connect to ${this.deviceId(connectionInfo)}`);
   }
 
-  private async setupFileTransferService(networkDevice: NetworkDevice, connectionInfo: ConnectionInfo) {
+  private async setupFileTransferService(networkDevice: NetworkDevice, connectionInfo: ConnectionInfo, signal: AbortSignal) {
     const sourceId = this.sourceId(connectionInfo);
 
     if (this.options.enableFileTranfer) {
       this.logger.info(`Starting file transfer for ${this.deviceId(connectionInfo)}`);
       const fileTransferService = await networkDevice.connectToService(FileTransfer);
+      if (this.stopIfCancelled(networkDevice, signal)) return;
       this.devices.set(`net://${sourceId}`, {
         networkDevice: networkDevice,
         fileTransferService: fileTransferService
@@ -290,19 +399,14 @@ export class StageLinqDevices extends EventEmitter {
    * @param connectionInfo Connection info
    * @param networkDevice Network device
    */
-  private async setupStateMap(connectionInfo: ConnectionInfo, networkDevice: NetworkDevice) {
+  private async setupStateMap(connectionInfo: ConnectionInfo, networkDevice: NetworkDevice, signal = this.session.signal) {
     // Setup StateMap
     this.logger.debug(`Setting up stateMap for ${connectionInfo.address}`);
 
     const stateMap = await networkDevice.connectToService(StateMap);
+    if (this.stopIfCancelled(networkDevice, signal)) return;
     stateMap.on('message', (data) => {
-      this.emit('message', connectionInfo, data)
-    });
-
-    const beatInfo = await networkDevice.connectToService(BeatInfo);
-    beatInfo.on("beatMessage", (beatData) => {
-      // beatData has { clock, deckCount, decks:[{beat,totalBeats,bpm,samples}] }
-      this.emit("beatMessage", connectionInfo, beatData);
+      if (!signal.aborted) this.emit('message', connectionInfo, data);
     });
 
     // Setup Player
@@ -315,16 +419,28 @@ export class StageLinqDevices extends EventEmitter {
     });
 
     player.on('trackLoaded', (status) => {
-      this.emit('trackLoaded', status);
+      if (!signal.aborted) this.emit('trackLoaded', status);
     });
 
     player.on('stateChanged', (status) => {
-      this.emit('stateChanged', status);
+      if (!signal.aborted) this.emit('stateChanged', status);
     });
 
     player.on('nowPlaying', (status) => {
-      this.emit('nowPlaying', status);
+      if (!signal.aborted) this.emit('nowPlaying', status);
     });
+
+    // Setup BeatInfo for realtime beat/BPM data. Not every device advertises
+    // this service, so failures here must not break state/track handling.
+    try {
+      const beatInfo = await networkDevice.connectToService(BeatInfo);
+      if (this.stopIfCancelled(networkDevice, signal)) return;
+      beatInfo.on('beatMessage', (data: BeatData) => {
+        if (!signal.aborted) this.emit('beatMessage', connectionInfo, data);
+      });
+    } catch (e) {
+      this.logger.debug(`BeatInfo not available for ${connectionInfo.address}: ${e}`);
+    }
   }
 
   private deviceId(device: ConnectionInfo) {
@@ -342,18 +458,51 @@ export class StageLinqDevices extends EventEmitter {
       === ConnectionStatus.CONNECTED;
   }
 
+  /**
+   * True while a device is in its post-failure cooldown.
+   *
+   * FAILED used to be terminal, which meant one unreachable moment at startup
+   * removed a device for the whole session. Once the cooldown expires we drop
+   * the status so the next discovery message reconnects it.
+   */
   private isFailed(device: ConnectionInfo) {
-    return this.discoveryStatus.get(this.deviceId(device))
-      === ConnectionStatus.FAILED;
+    const id = this.deviceId(device);
+    if (this.discoveryStatus.get(id) !== ConnectionStatus.FAILED) return false;
+
+    const failedAt = this.failedAt.get(id) ?? 0;
+    if (Date.now() - failedAt < RETRY_AFTER_FAILURE_MS) return true;
+
+    this.logger.info(`Retrying previously failed device ${id}`);
+    this.discoveryStatus.delete(id);
+    this.failedAt.delete(id);
+    return false;
   }
 
   private isIgnored(device: ConnectionInfo) {
+    // X1800/X1850 mixers (software.name JM08) are ignored. On an SC-players +
+    // X1850 rig this mixer is the ONLY device carrying channel faders, so
+    // ignoring it may be why such a rig's fader is not respected in the overlay
+    // (NP3-333 — an unverified suspicion; needs Denon hardware to confirm).
+    // Behaviour is unchanged for now, but we surface each ignored mixer once so
+    // a real user of this hardware shows up in telemetry instead of silently
+    // degrading. Do NOT remove the ignore without checking why JM08 was added.
+    if (device.software.name === 'JM08') {
+      const id = this.deviceId(device);
+      if (!this.loggedIgnoredMixers.has(id)) {
+        this.loggedIgnoredMixers.add(id);
+        this.logger.warn(
+          `Ignoring StageLinQ mixer ${id} (X1800/X1850). If this rig relies on ` +
+          `the mixer for channel faders, the overlay may not respect them (NP3-333).`
+        );
+      }
+      return true;
+    }
+
     return (
       device.source === this.options.actingAs?.source
       || device.software.name === 'OfflineAnalyzer'
       || /^SoundSwitch/i.test(device.software.name)
       || /^Resolume/i.test(device.software.name)
-      || device.software.name === 'JM08' // Ignore X1800/X1850 mixers
       || device.software.name === 'SSS0' // Ignore SoundSwitchEmbedded on players
     )
   }

@@ -58,6 +58,9 @@ export const States = [
   StageLinqValue.EngineDeck1TrackTrackLength,
   StageLinqValue.EngineDeck1TrackTrackName,
   StageLinqValue.EngineDeck1TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck1TrackGenre,
+  StageLinqValue.EngineDeck1TrackCurrentKey,
+  StageLinqValue.EngineDeck1TrackTrackURI,
 
   // Deck 2 telemetry
   StageLinqValue.EngineDeck2CurrentBPM,
@@ -81,6 +84,9 @@ export const States = [
   StageLinqValue.EngineDeck2TrackTrackLength,
   StageLinqValue.EngineDeck2TrackTrackName,
   StageLinqValue.EngineDeck2TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck2TrackGenre,
+  StageLinqValue.EngineDeck2TrackCurrentKey,
+  StageLinqValue.EngineDeck2TrackTrackURI,
 
   // Deck 3 telemetry
   StageLinqValue.EngineDeck3CurrentBPM,
@@ -104,6 +110,9 @@ export const States = [
   StageLinqValue.EngineDeck3TrackTrackLength,
   StageLinqValue.EngineDeck3TrackTrackName,
   StageLinqValue.EngineDeck3TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck3TrackGenre,
+  StageLinqValue.EngineDeck3TrackCurrentKey,
+  StageLinqValue.EngineDeck3TrackTrackURI,
 
   // Deck 4 telemetry
   StageLinqValue.EngineDeck4CurrentBPM,
@@ -127,6 +136,9 @@ export const States = [
   StageLinqValue.EngineDeck4TrackTrackLength,
   StageLinqValue.EngineDeck4TrackTrackName,
   StageLinqValue.EngineDeck4TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck4TrackGenre,
+  StageLinqValue.EngineDeck4TrackCurrentKey,
+  StageLinqValue.EngineDeck4TrackTrackURI,
 
 ];
 

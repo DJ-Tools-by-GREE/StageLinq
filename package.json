@@ -1,6 +1,6 @@
 {
   "name": "@gree44/stagelinq",
-  "version": "3.1.0",
+  "version": "3.5.7",
   "description": "TypeScript library to connect to Denon StageLinq devices",
   "homepage": "https://github.com/chrisle/StageLinq",
   "repository": {
@@ -27,10 +27,7 @@
     "build": "tsc --build tsconfig.json",
     "watch": "tsc --build tsconfig.json -w",
     "clean": "rimraf dist",
-    "prepublishOnly": "npm run clean && npm run build",
-    "release": "node .github/release.js",
-    "release:patch": "node .github/release.js --patch",
-    "release:major": "node .github/release.js --major"
+    "prepublishOnly": "npm run clean && npm run build && npm test"
   },
   "author": "Chris Le (TRIODE)",
   "license": "MIT",
@@ -43,11 +40,11 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^12.5.0",
+    "better-sqlite3-multiple-ciphers": "^12.9.0",
     "console-stamp": "^3.0.3",
     "file-type": "^16.5.3",
     "ip": "^1.1.5",
-    "metadata-connect": "^1.1.1",
+    "metadata-connect": "^1.2.0",
     "minimist": "^1.2.5",
     "promise-socket": "^7.0.0"
   },
@@ -65,5 +62,8 @@
   },
   "overrides": {
     "rollup": ">=4.59.0"
+  },
+  "allowScripts": {
+    "better-sqlite3-multiple-ciphers": true
   }
 }

@@ -38,20 +38,26 @@ stagelinq.devices.on('trackUnloaded', (deck: DeckInfo) => {});
 
 ```ts
 interface PlayerStatus {
-  deck: string;           // 'A', 'B', 'C', 'D'
+  deck: string;           // e.g. '1A', '2B'
   title: string;
   artist: string;
-  album: string;
   genre: string;
-  label: string;
-  key: string;
-  bpm: number;
-  duration: number;
+  key: string;            // as Engine displays it, e.g. 'Am' or '8A'
+  currentBpm: number;
+  trackLength: number;    // raw device value, some firmware reports samples
+  trackUri: string;       // names the service for a streaming track
   trackPath: string;
   trackNetworkPath: string;
-  artwork?: string;
+  playState: boolean;
+  externalMixerVolume: number;
 }
 ```
+
+There is no `album`, `label` or `artwork` here: no Engine build publishes an
+album or label state (see [statemap.md](statemap.md)), and artwork comes from
+the track's own file over FileTransfer rather than from a state. Only the fields
+in [the subscription allowlist](statemap.md#what-this-library-subscribes-to)
+are ever populated; the full interface is in `types/player.ts`.
 
 ## State Events
 
@@ -71,7 +77,7 @@ stagelinq.devices.on('/Engine/Deck1/CurrentBPM', (value: number) => {});
 | **Track Info** | `/Engine/Deck1/ArtistName`, `/Engine/Deck1/SongName`, `/Engine/Deck1/TrackName`, `/Engine/Deck1/TrackURI`, `/Engine/Deck1/TrackNetworkPath`, `/Engine/Deck1/TrackLength` |
 | **Playback** | `/Engine/Deck1/Play`, `/Engine/Deck1/PlayState`, `/Engine/Deck1/CurrentBPM`, `/Engine/Deck1/Speed`, `/Engine/Deck1/SpeedRange` |
 | **Sync** | `/Engine/Deck1/SyncMode`, `/Engine/Deck1/DeckIsMaster`, `/Engine/Deck1/MasterTempo` |
-| **Key** | `/Engine/Deck1/CurrentKeyIndex`, `/Engine/Deck1/KeyLock` |
+| **Key** | `/Engine/Deck1/Track/CurrentKey`, `/Engine/Deck1/Track/CurrentKeyIndex`, `/Engine/Deck1/Track/KeyLock` |
 | **Loop** | `/Engine/Deck1/LoopEnableState`, `/Engine/Deck1/CurrentLoopInPosition`, `/Engine/Deck1/CurrentLoopOutPosition`, `/Engine/Deck1/CurrentLoopSizeInBeats` |
 | **Cue** | `/Engine/Deck1/CuePosition` |
 | **Mixer** | `/Engine/Deck1/ExternalMixerVolume`, `/Mixer/CrossfaderPosition` |
@@ -80,21 +86,31 @@ stagelinq.devices.on('/Engine/Deck1/CurrentBPM', (value: number) => {});
 
 ## Beat Events (BeatInfo Service)
 
+Emitted when a connected device advertises the BeatInfo service. Each event
+carries one snapshot covering **all** decks (not one event per deck).
+
 ```ts
-stagelinq.devices.on('beatMessage', (data: BeatData) => {});
+StageLinq.devices.on('beatMessage', (connectionInfo: ConnectionInfo, data: BeatData) => {});
 ```
 
 ### BeatData
 
 ```ts
 interface BeatData {
-  deck: number;           // 0-3
-  beat: number;           // Current beat in bar (1-4)
-  totalBeats: number;     // Total beats played
+  clock: bigint;          // Device clock value for this update
+  deckCount: number;      // Number of decks in `decks`
+  decks: DeckBeatData[];  // Per-deck beat data (index = deck number)
+}
+
+interface DeckBeatData {
+  beat: number;           // Current beat position in the track (fractional, counts up)
+  totalBeats: number;     // Total beats in the track
   bpm: number;            // Current BPM
-  timeline: number;       // Timeline position in seconds
+  samples?: number;       // Sample position (if reported)
 }
 ```
+
+See [beatinfo.md](./beatinfo.md) for full examples.
 
 ## Database Events
 
@@ -165,9 +181,12 @@ health.on('reconnectFailed', () => {});
 The library tracks ~200+ state values per deck. See [protocol.md](protocol.md) for the complete protocol specification.
 
 ### Track States
-- `ArtistName`, `SongName`, `TrackName`, `AlbumName`
-- `TrackURI`, `TrackNetworkPath`, `TrackLength`, `TrackBytes`
-- `Genre`, `Label`, `Comment`, `Rating`
+- `ArtistName`, `SongName`, `TrackName`
+- `TrackUri`, `TrackNetworkPath`, `TrackLength`, `TrackBytes`
+- `Genre`, `Rating`
+
+`Label`, `AlbumName` and `Comment` were listed here but do not exist in any
+Engine build — see [statemap.md](statemap.md).
 
 ### Playback States
 - `Play`, `PlayState`, `PlayStatePath`
@@ -179,7 +198,7 @@ The library tracks ~200+ state values per deck. See [protocol.md](protocol.md) f
 - `DeckIsMaster`, `MasterTempo`
 
 ### Key States
-- `CurrentKeyIndex`, `KeyLock`
+- `CurrentKey`, `CurrentKeyIndex`, `OriginalKey`, `CurrentKeyCents`, `KeyLock`
 
 ### Loop States
 - `LoopEnableState`, `LoopIsActive`

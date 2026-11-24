@@ -110,24 +110,28 @@ export class Player extends EventEmitter {
           : null;
 
     const cueData =
-      (/PlayState$/.test(name)) ? { playState: json.state }
-        : (/Track\/TrackNetworkPath$/.test(name)) ? {
+        (/PlayState$/.test(name)) ? { playState: json.state }
+      : (/Track\/TrackNetworkPath$/.test(name)) ? {
           trackNetworkPath: json.string,
           source: this.getSourceAndTrackPath(json.string).source,
           trackPath: this.getSourceAndTrackPath(json.string).trackPath,
           trackPathAbsolute: this.getSourceAndTrackPath(json.string).trackPathAbsolute
         }
-          : (/Track\/SongLoaded$/.test(name)) ? { songLoaded: json.state }
-            : (/Track\/SongName$/.test(name)) ? { title: json.string }
-              : (/Track\/ArtistName$/.test(name)) ? { artist: json.string }
-                : (/Track\/TrackData$/.test(name)) ? { hasTrackData: json.state }
-                  : (/Track\/TrackName$/.test(name)) ? { fileLocation: json.string }
-                    : (/\/Track\/CurrentBPM$/.test(name)) ? { trackCurrentBpm: json.value }
-                      : (/\/CurrentBPM$/.test(name)) ? { currentBpm: json.value }
-                        : (/ExternalMixerVolume$/.test(name)) ? { externalMixerVolume: json.value }
-                          : (/Play$/.test(name)) ? { play: json.state }
-                            : (/PlayerJogColor[A-D]$/.test(name)) ? { jogColor: json.color }
-                              : null;
+      : (/Track\/SongLoaded$/.test(name)) ? { songLoaded: json.state }
+      : (/Track\/SongName$/.test(name)) ? { title: json.string }
+      : (/Track\/ArtistName$/.test(name)) ? { artist: json.string }
+      : (/Track\/TrackData$/.test(name)) ? { hasTrackData: json.state }
+      : (/Track\/TrackName$/.test(name)) ? { fileLocation: json.string }
+      : (/Track\/Genre$/.test(name)) ? { genre: json.string }
+      : (/Track\/CurrentKey$/.test(name)) ? { key: json.string }
+      : (/Track\/TrackLength$/.test(name)) ? { trackLength: json.value }
+      : (/Track\/TrackUri$/.test(name)) ? { trackUri: json.string }
+      : (/Track\/CurrentBPM$/.test(name)) ? { trackCurrentBpm: json.value }
+      : (/CurrentBPM$/.test(name)) ? { currentBpm: json.value }
+      : (/ExternalMixerVolume$/.test(name)) ? { externalMixerVolume: json.value }
+      : (/Play$/.test(name)) ? { play: json.state }
+      : (/PlayerJogColor[A-D]$/.test(name)) ? { jogColor: json.color }
+      : null;
 
     if (cueData && deck) {
       this.queue[deck].push({ layer: deck, ...cueData });

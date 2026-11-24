@@ -1,8 +1,121 @@
 # Change log
 
+## Fork integration of upstream v3.5.7 — 2026-11-24
+
+- Merge upstream through `83f6723`, keeping the `@gree44/stagelinq` package name.
+- Combine upstream metadata subscriptions with all existing WebView telemetry, including sample rate, track BPM, pitch and deck master states.
+- Use one optional BeatInfo connection and preserve the fork's separate track BPM mapping.
+- Cancel obsolete connection attempts and retry delays when disconnecting.
+- Keep the fork's NPM_TOKEN publishing workflow and run both CI workflows on Node 24.
+- Keep `prepare`, the cross-platform `rimraf` clean command and dynamic ESM metadata loading. Adopt upstream's prepublish tests and removal of the manual release scripts.
+- Fix the discovery CLI import so repeated builds resolve source files correctly.
+- Record consumer compatibility and the full integration summary in `memory.md`.
+
+## v3.5.7
+
+- ci: retire release.js so fixes pushed to main reach npm (NP3-461)
+
+
+## v3.5.6
+
+- fix: log StateMap connection timeouts instead of crashing when a device drops off the network (NP3-447)
+
+## v3.5.5
+
+- ci: CI comes from the shared connector-ci workflows
+
+
+## v3.5.4
+
+- ci: StageLinQ pull requests are tested the way main is
+
+
+## v3.5.3
+
+- fix: depend on the published metadata-connect package instead of a local path (#12)
+
+
+## v3.5.2
+
+- chore: lockfile records the metadata-connect 1.2.0 bump
+
+
+## v3.5.1
+
+- fix: the SQLite driver keeps building under npm 12, which blocks install scripts by default
+
+
+## v3.5.0
+
+- docs: the state list no longer promises a record label the hardware never sends
+- perf: the first track is detected immediately instead of waiting on a database download
+- feat: apps embedding the library can read track metadata out of the Engine database
+
+
+## v3.4.0
+
+- feat: subscribe to Genre, CurrentKey, TrackLength and TrackUri
+
+
+## v3.3.3
+
+- docs: drop the player states no Engine firmware actually sends
+
+
+## v3.3.2
+
+- fix: going offline no longer floods error reporting once a second
+- fix: Denon players no longer drop out when a discovery message splits across packets
+
+
+## v3.3.1
+
+- chore: lockfile picks up metadata-connect 1.1.11
+
+
+## v3.3.0
+
+- ci: stagelinq releases reach npm again instead of failing on every push
+- fix: a malformed StageLinQ message no longer discards the rest of the network read
+- fix: Denon tracks on Engine OS 5.x get their album art and metadata back
+- docs: readers can find every Now Playing connector library from the StageLinq README
+- docs: Windows users can install the Wireshark dissector without hitting a missing-folder error (#11)
+- feat: surface ignored X1800/X1850 mixers so a real user becomes visible (NP3-333)
+- fix: a DJ device that is briefly unreachable at startup is no longer ignored for the whole session
+
+
+## v3.2.0
+
+- docs: correct BeatInfo examples to the working beatMessage API
+- feat: emit realtime beat and BPM data via the beatMessage event
+
+
+## v3.1.4
+
+- build: bump better-sqlite3-multiple-ciphers to 12.11.1 for Electron 43
+- refactor: use better-sqlite3-multiple-ciphers for Electron 43 compatibility
+
+
+## v3.1.3
+
+- chore: bump metadata-connect to 1.1.10 in lockfile
+
+
+## v3.1.2
+
+- chore: drop transient peer:true flags from lock file
+
+
+## v3.1.1
+
+- ci: upgrade npm before publishing so OIDC trusted publishing works
+
+
 ## v3.1.0
 
 - npm install
+- ci: check out metadata-connect sibling so publish workflow can build
+- ci: switch publish workflow to OIDC trusted publishing
 - fix(ci): publish no longer fails when several connect repos release together
 - chore: regenerate lockfile after dependency install
 - chore: update lockfile

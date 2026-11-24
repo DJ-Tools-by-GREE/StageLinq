@@ -34,12 +34,22 @@ await stagelinq.connect();
 | `ArtistName` | string | Track artist |
 | `SongName` | string | Track title |
 | `TrackName` | string | Full track name |
-| `AlbumName` | string | Album name |
 | `Genre` | string | Genre |
-| `Label` | string | Record label |
-| `TrackLength` | number | Duration in seconds |
+| `TrackLength` | number | Raw device length, sometimes expressed in samples |
+| `TrackBytes` | number | File size in bytes |
+| `SampleRate` | number | Sample rate |
+| `FileName` | string | File name |
+| `AlbumArtPath` | string | Path to album art |
 | `TrackNetworkPath` | string | Network path to track |
-| `TrackURI` | string | Track URI |
+| `TrackUri` | string | Track URI |
+
+There is no `Label`, `AlbumName` or `Comment` state. Earlier revisions of this
+table listed all three; none has ever existed in any Engine build. Verified
+against the Engine OS 5.0.4 SC6000 firmware and Engine DJ desktop 5.0.0: the
+only `Label` paths under a deck prefix are `AutoLoopLabel%2` and
+`BeatJump/BeatJumpLabel%2`, which are loop-button UI text. The device does hold
+a track's record label — `Track.label` in the Engine library database — it just
+never publishes it over StageLinQ (NP3-364).
 
 ### Playback State
 
@@ -63,8 +73,14 @@ await stagelinq.connect();
 
 | State | Type | Description |
 |-------|------|-------------|
+| `CurrentKey` | string | Musical key as Engine displays it |
 | `CurrentKeyIndex` | number | Musical key index |
 | `KeyLock` | boolean | Key lock enabled |
+
+`CurrentKey` is the one to read. `CurrentKeyIndex` is a position in Engine's own
+key ordering, and that ordering is not documented anywhere — turning it back
+into a key name means guessing a mapping, and a wrong key is worse than no key
+for anything that matches tracks against a catalogue.
 
 ### Loop
 
@@ -88,6 +104,46 @@ await stagelinq.connect();
 |-------|------|-------------|
 | `ExternalMixerVolume` | number | Channel fader (0-1) |
 | `CrossfaderPosition` | number | Crossfader position |
+
+## What this library subscribes to
+
+Engine OS publishes roughly 115 states per deck, but a device only sends the
+ones you ask for. This fork's `States` array in `services/StateMap.ts` subscribes
+to 24 states per deck to support WebView's timing, pitch and metadata display.
+
+| Purpose | States |
+|---------|--------|
+| Transport | `Play`, `PlayState`, `PlayStatePath` |
+| Track identity | `Track/SongLoaded`, `Track/SongName`, `Track/ArtistName`, `Track/TrackName`, `Track/TrackData`, `Track/TrackNetworkPath` |
+| Track metadata | `Track/Genre`, `Track/CurrentKey`, `Track/TrackLength`, `Track/TrackUri` |
+| Timing and key index | `Track/SampleRate`, `Track/CurrentKeyIndex` |
+| Track BPM | `Track/CurrentBPM` |
+| Pitch | `Speed`, `SpeedNeutral`, `SpeedOffsetDown`, `SpeedOffsetUp`, `SpeedRange`, `SpeedState` |
+| Mixing | `CurrentBPM`, `ExternalMixerVolume` |
+
+Plus, once per device: the channel faders and crossfader, the channel
+assignments, `Client/Preferences/*`, `Client/Deck{1,2,3,4}/DeckIsMaster`,
+`Engine/Master/MasterTempo` and `Engine/Sync/Network/MasterStatus`.
+
+WebView also appends loop-region and QuickLoop subscriptions to the exported
+mutable `States` array before connecting. `TrackLength` and loop positions can
+arrive in samples on its hardware and need conversion using `Track/SampleRate`.
+
+### Deliberately not subscribed to
+
+Most of what is left out is high-frequency transport data. `PlayPosition`,
+`TrackPosition`, `SongPosition`, `PlayheadPosition`, `Scratching`,
+`SlipModePosition`, the waveform-view states and the loop-region and quick-cue
+families all update every few milliseconds while a deck plays, and none of them
+says anything about *what* is playing. Subscribing to them would flood the state
+channel to no purpose.
+
+The rest are metadata states that exist but have nowhere to go: `Rating`,
+`FileName`, `AlbumArtPath`, `MetaDataBPM`, `OriginalKey`,
+`CurrentKeyCents`. Adding a subscription is cheap — `subscribeState` is a single
+fire-and-forget write, and a state the firmware does not publish simply never
+arrives — but a state nothing reads is still noise on the wire. Subscribe
+deliberately, not exhaustively.
 
 ## State Path Format
 
