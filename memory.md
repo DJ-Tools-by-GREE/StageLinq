@@ -56,8 +56,9 @@ and fetched upstream Git history supplied the package implementation.
   AbortSignal suppresses late service setup, state and beat events from an
   earlier connection. Clear connection state so the same manager can discover
   devices again. Consume completed StateMap callbacks once. WebView uses
-  maxRetries 999 and replaces its singleton through a watchdog, so old retry
-  loops must stop during reconnect.
+  maxRetries 999 and reconnects through a watchdog, so old retry loops must
+  stop during reconnect. The subsequent WebView audit replaced private
+  singleton mutation with fresh public StageLinqInstance objects.
 - Retain the fork's NPM_TOKEN release authentication and local workflow
   definitions. Upstream's shared publish workflow requires npm OIDC trusted
   publishing and supplies no token fallback. Change both fork workflows from
@@ -130,3 +131,18 @@ not yet consumed by the bridge.
   device marked connected, so WebView's existing watchdog remains relevant.
   In-flight TCP attempts keep their underlying timeout and close when they
   settle after cancellation.
+
+## WebView audit follow-up
+
+The detailed 2026-11-24 WebView audit uses this package's public
+StageLinqInstance and parseNetworkPath APIs, plus Chris's metadata-connect
+parser for embedded artwork. It retains per-device transfer serialization:
+downloadFile waits for availability but does not make multiple callers atomic.
+The WebView build now rebuilds this sibling before its own workspaces.
+
+The audit report and consumer regression tests live in
+../StageLinq-WebView/docs/review-2026-11-24/. This follow-up changes no library
+runtime behavior. WebView's direct file-type parser is patched independently;
+this fork still follows upstream's file-type 16 dependency, which needs a
+separate API migration for advisory GHSA-5v7r-6r5c-r473. WebView's installed
+dependency audit does not cover this sibling's separate dependency tree.
