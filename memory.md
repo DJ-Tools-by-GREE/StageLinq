@@ -146,3 +146,48 @@ runtime behavior. WebView's direct file-type parser is patched independently;
 this fork still follows upstream's file-type 16 dependency, which needs a
 separate API migration for advisory GHSA-5v7r-6r5c-r473. WebView's installed
 dependency audit does not cover this sibling's separate dependency tree.
+
+## Selected transfer-integrity follow-up — 2026-11-24
+
+The user authorized fixing file transfers, media caches and recording integrity,
+then committing/pushing both repositories. The package portion fixes BO-15:
+FileTransfer full/range/stat/source operations now share an atomic queue, rather
+than racing an availability flag. Empty files and every failure clear their
+waits; one operation deadline replaces the asynchronous Promise executor and
+its surviving progress loop. Wait listeners register before requests, allowing
+immediate responses. Full/range accumulation retains only the requested bytes
+and preserves upstream firmware chunk-size detection, probing and EOF clamping.
+
+The optional API is getFile(path, signal?, maxBytes = Infinity), plus a final
+signal on getFileRange, getFileSize, getSources and waitTillAvailable. WebView
+supplies its audio byte budget before allocation. Existing unlimited getFile
+callers remain compatible; progress remains 0–100 percent.
+
+Late chunks cannot be correlated by transfer ID. Aborted/failed active work
+closes the underlying TCP connection and removes its data listener. The next
+operation lazily reconnects that FileTransfer service; this is necessary because
+a track replacement can cancel media while BeatInfo remains healthy, so the
+WebView beat watchdog would not reconnect it. Explicit disconnect cancels all
+queued calls and never auto-reopens. A subsequent explicit connect waits for old
+cleanup. During a lazy TCP handshake, cancelled callers reject promptly while
+the queue remains reserved until the underlying bounded connection attempt
+settles. Do not free that reservation early or accept old-stream chunks.
+
+Validation: TypeScript build and all 284 tests across 25 files pass. Sixteen new
+lifecycle regressions cover empty-then-valid reads, mixed full/range ordering,
+active/queued cancellation, disconnect/socket close, request/chunk/completion
+failures and deadlines, pre-aborted work, late cancelled reconnects and
+pre-allocation byte limits. The
+existing overrun regression now drives a full getFile call. The pre-existing
+ConnectionHealth Vitest warning remains. No live firmware/hardware validation
+or npm publication was performed.
+
+Peer review TP-01 found that utils/tcp.ts previously called raw socket.setTimeout
+without any timeout listener. Node only emitted an event, so a blackholed TCP
+attempt could outlive the declared five-second CONNECT_TIMEOUT and hold the
+new transfer queue. The helper now enforces a cleared connection-only deadline,
+destroys timed-out/failed sockets, and leaves successfully connected idle
+services open. Three actual-helper regressions cover deadline failure, immediate
+failure cleanup and healthy idle connections; a fourth integration regression
+proves a cancelled FileTransfer reconnect releases its queue at the real helper
+deadline and the next transfer succeeds. No new network retry policy was added.

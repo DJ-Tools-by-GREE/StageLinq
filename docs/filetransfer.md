@@ -43,6 +43,52 @@ stagelinq.devices.on('ready', async (info) => {
 });
 ```
 
+## Cancellation and resource limits
+
+Existing calls remain compatible. These methods accept an optional final
+AbortSignal, except getFile, which accepts it second and a byte limit third:
+
+    getFile(location, signal?, maxBytes = Infinity): Promise<Uint8Array>
+    getFileRange(location, offset, length, signal?): Promise<Buffer>
+    getFileSize(location, signal?): Promise<number>
+    getSources(signal?): Promise<Source[]>
+    waitTillAvailable(signal?): Promise<void>
+
+For example, getFile(path, controller.signal, 256 * 1024 * 1024) rejects files
+larger than 256 MiB before requesting chunks or allocating their body. The
+default remains unlimited for compatibility with database consumers. Range
+offset/length values must be nonnegative safe integers. Empty and out-of-range
+reads return empty bytes and release the transfer reservation.
+
+Every operation is serialized atomically on the FileTransfer instance, including
+full downloads, partial reads, source discovery and file-stat requests. The old
+waitTillAvailable method remains available as an observation barrier; callers
+do not need it to make getFile/getFileRange mutually exclusive. Progress still
+reports percentComplete in the 0–100 range on the FileTransfer instance.
+
+One DOWNLOAD_TIMEOUT deadline covers each active operation, and response waits
+also use MESSAGE_TIMEOUT. Success, failure and cancellation remove listeners
+and timers; queued cancellation returns promptly without interrupting unrelated
+active work. Cancellation during a connection handshake keeps the internal
+queue reserved until that bounded TCP attempt settles.
+
+TCP connection establishment has an actual CONNECT_TIMEOUT deadline: the helper
+destroys the pending socket and rejects when the deadline expires, and clears
+the timer on success or failure. It installs no idle timeout on a successfully
+connected service. This also bounds reconnect attempts after transfer cancellation.
+
+Chunk messages do not identify the transfer they belong to. An interrupted or
+failed active operation therefore closes its TCP stream and removes its data
+listener so late bytes cannot corrupt a later file. The next operation lazily
+reconnects the same service at its known address/port and measures its chunk size
+again. Explicit disconnect cancels all queued work, closes idempotently and
+requires an explicit connect before reuse. It never silently restarts a service
+the application deliberately stopped.
+
+Engine OS 5 chunk-size learning, nonzero-offset probing and EOF clamping remain
+based on Chris Le's implementation. Synthetic tests cover the lifecycle and
+large chunks; live firmware transfer validation remains separate.
+
 ## Events
 
 ### Database Events

@@ -1,7 +1,6 @@
-import { DOWNLOAD_TIMEOUT } from '../types';
+import { DOWNLOAD_TIMEOUT, MESSAGE_TIMEOUT } from '../types';
 import { ReadContext } from '../utils/ReadContext';
 import { Service } from './Service';
-import { sleep } from '../utils/sleep';
 import { strict as assert } from 'assert';
 import { WriteContext } from '../utils/WriteContext';
 import type { ServiceMessage, Source } from '../types';
@@ -44,8 +43,11 @@ export declare interface FileTransfer {
 }
 
 export class FileTransfer extends Service<FileTransferData> {
-  private receivedFile: WriteContext | null = null;
-  private _available: boolean = true;
+  private operationTail: Promise<void> = Promise.resolve();
+  private lifecycle = new AbortController();
+  private activeOperation: AbortController | null = null;
+  private reconnectNeeded = false;
+  private pendingOperations = 0;
 
   /**
    * The device's real chunk size, measured from the wire. Null until a chunk
@@ -55,7 +57,137 @@ export class FileTransfer extends Service<FileTransferData> {
    */
   private deviceChunkSize: number | null = null;
 
-  async init() {}
+  async init() {
+    const connection = this.connection;
+    if (!connection) return;
+    const closed = () => {
+      if (this.connection !== connection) return;
+      this.invalidateTransport(new Error('FileTransfer connection closed'));
+    };
+    connection.socket.once('close', closed);
+    connection.socket.once('error', closed);
+  }
+
+  override async connect(): Promise<void> {
+    if (this.lifecycle.signal.aborted) this.lifecycle = new AbortController();
+    const signal = this.lifecycle.signal;
+    await this.operationTail;
+    signal.throwIfAborted();
+    try {
+      await super.connect();
+      signal.throwIfAborted();
+    } catch (error) {
+      this.closeTransport();
+      throw error;
+    }
+    this.reconnectNeeded = false;
+  }
+
+  override disconnect(): void {
+    const error = new Error('FileTransfer disconnected');
+    this.lifecycle.abort(error);
+    this.activeOperation?.abort(error);
+    this.reconnectNeeded = false;
+    this.closeTransport();
+  }
+
+  private closeTransport(): void {
+    const connection = this.connection;
+    this.connection = null;
+    this.deviceChunkSize = null;
+    if (!connection) return;
+    connection.socket.removeAllListeners('data');
+    try { connection.destroy(); } catch (error) {
+      this.logger.error('Error closing FileTransfer', error);
+    }
+  }
+
+  private invalidateTransport(error: unknown): void {
+    // Chunk messages carry no transfer ID. Closing this stream keeps late
+    // bytes from a failed transfer out of the next one.
+    if (this.connection && !this.lifecycle.signal.aborted) this.reconnectNeeded = true;
+    this.closeTransport();
+    this.activeOperation?.abort(error);
+  }
+
+  private async runOperation<T>(operation: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const lifetime = this.lifecycle.signal;
+    const caller = signal ? AbortSignal.any([signal, lifetime]) : lifetime;
+    caller.throwIfAborted();
+    ++this.pendingOperations;
+    const next = this.operationTail.then(async () => {
+      caller.throwIfAborted();
+      const controller = new AbortController();
+      this.activeOperation = controller;
+      const active = AbortSignal.any([caller, controller.signal]);
+      const timeout = setTimeout(() => controller.abort(new Error('FileTransfer download timed out')), DOWNLOAD_TIMEOUT);
+      let started = false;
+      try {
+        if (this.reconnectNeeded) {
+          // Retain the queue reservation until a TCP handshake settles.
+          started = true;
+          await super.connect();
+          this.reconnectNeeded = false;
+          active.throwIfAborted();
+        }
+        active.throwIfAborted();
+        started = true;
+        return await operation(active);
+      } catch (error) {
+        if (started) this.invalidateTransport(error);
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+        if (this.activeOperation === controller) this.activeOperation = null;
+      }
+    });
+    this.operationTail = next.then(() => {}, () => {}).finally(() => { --this.pendingOperations; });
+    return this.withAbort(next, caller);
+  }
+
+  private withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const aborted = () => reject(signal.reason);
+      signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) aborted();
+      void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+    });
+  }
+
+  private completeTransfer(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    return this.withAbort(this.signalTransferComplete(), signal);
+  }
+
+  private requestMessage(id: MessageId, request: () => Promise<void>, signal: AbortSignal): Promise<FileTransferData> {
+    return new Promise((resolve, reject) => {
+      const finish = (error?: unknown, message?: FileTransferData) => {
+        clearTimeout(timer);
+        this.off('message', listener);
+        signal.removeEventListener('abort', aborted);
+        if (error !== undefined) reject(error); else resolve(message);
+      };
+      const listener = (message: ServiceMessage<FileTransferData>) => {
+        if (message.id === id) finish(undefined, message.message);
+      };
+      const aborted = () => finish(signal.reason);
+      const timer = setTimeout(() => finish(new Error('FileTransfer response timed out: ' + id)), MESSAGE_TIMEOUT);
+      this.addListener('message', listener);
+      signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) { aborted(); return; }
+      // Register first so immediate device responses cannot race the write.
+      void request().catch(error => finish(error));
+    });
+  }
+
+  private transferInfo(location: string, signal: AbortSignal): Promise<{ size: number; txid: number }> {
+    return this.requestMessage(MessageId.FileTransferId, () => this.requestFileTransferId(location), signal).then(info => {
+      if (!info || !Number.isSafeInteger(info.size) || info.size < 0 || !Number.isSafeInteger(info.txid) || info.txid < 0) {
+        throw new Error('Invalid FileTransfer size or transfer ID');
+      }
+      return info;
+    });
+  }
 
   /**
    * Record the device's chunk size from an observed chunk.
@@ -193,271 +325,143 @@ export class FileTransfer extends Service<FileTransferData> {
     }
   }
 
-  protected messageHandler(p_data: ServiceMessage<FileTransferData>): void {
-    if (p_data.id === MessageId.FileTransferChunk && this.receivedFile) {
-      const room = this.receivedFile.sizeLeft();
-      if (room <= 0) return;
+  protected messageHandler(_data: ServiceMessage<FileTransferData>): void {}
 
-      const chunk: Uint8Array = p_data.message.data;
-      const fileSize = this.receivedFile.tell() + room;
-      this.noteChunkSize(this.receivedFile.tell(), chunk.byteLength, fileSize);
-
-      // Write only what still fits. A device may overrun the declared file size
-      // on the final chunk, and WriteContext is autoGrow by default — letting it
-      // resize would push the buffer past `size`, so isEOF() would never become
-      // true and getFile() would spin until DOWNLOAD_TIMEOUT. Slicing keeps the
-      // write position landing exactly on the end of the file.
-      this.receivedFile.write(room < chunk.byteLength ? chunk.subarray(0, room) : chunk);
-    } else {
-      // Logger.log(p_data);
+  async getFile(p_location: string, signal?: AbortSignal, maxBytes = Infinity): Promise<Uint8Array> {
+    if (maxBytes !== Infinity && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
+      throw new RangeError('maxBytes must be a nonnegative safe integer');
     }
-  }
-
-  async getFile(p_location: string): Promise<Uint8Array> {
-    assert(this.receivedFile === null);
-
-    if (this._available) {
-      this._available = false;
-    }
-    await this.requestFileTransferId(p_location);
-    const txinfo = await this.waitForMessage(MessageId.FileTransferId);
-
-    if (txinfo) {
-      this.receivedFile = new WriteContext({ size: txinfo.size });
-
-      // Over-requesting is harmless (the device stops at EOF) but requesting
-      // too few chunks would leave the write buffer short of isEOF() and hang,
-      // so fall back to the smaller assumed size until the real one is known.
-      const totalChunks = Math.ceil(txinfo.size / (this.deviceChunkSize ?? CHUNK_SIZE));
-      const total = parseInt(txinfo.size);
-
-      if (total === 0) {
-        this.logger.warn(`${p_location} doesn't exist or is a streaming file`);
+    return this.runOperation(async active => {
+      const txinfo = await this.transferInfo(p_location, active);
+      active.throwIfAborted();
+      if (txinfo.size > maxBytes) {
+        await this.completeTransfer(active);
+        throw new RangeError('File exceeds download byte limit: ' + txinfo.size + ' > ' + maxBytes);
+      }
+      if (txinfo.size === 0) {
+        await this.completeTransfer(active);
         return new Uint8Array(0);
       }
-
-      await this.requestChunkRange(txinfo.txid, 0, totalChunks - 1);
-
-      try {
-        await new Promise(async (resolve, reject) => {
-          setTimeout(() => {
-            reject(new Error(`Failed to download '${p_location}'`));
-          }, DOWNLOAD_TIMEOUT);
-
-          while (this.receivedFile && this.receivedFile.isEOF() === false) {
-            const bytesDownloaded = total - this.receivedFile.sizeLeft();
-            const percentComplete = (bytesDownloaded / total) * 100;
-            this.emit('fileTransferProgress', {
-              sizeLeft: this.receivedFile?.sizeLeft() ?? 0,
-              total: txinfo.size,
-              bytesDownloaded: bytesDownloaded,
-              percentComplete: percentComplete,
-            });
-            this.logger.debug(
-              `Reading ${p_location} progressComplete=${Math.ceil(percentComplete)}% ${bytesDownloaded}/${total}`
-            );
-            await sleep(200);
-          }
-          this.logger.debug(`Download complete.`);
-          resolve(true);
-        });
-      } catch (err) {
-        const msg = `Could not read database from ${p_location}: ${err instanceof Error ? err.message : err}`;
-        this.logger.error(msg);
-        this._available = true;
-        throw new Error(msg);
-      }
-
-      this.logger.debug(`Signaling transfer complete.`);
-      await this.signalTransferComplete();
-      this._available = true;
-    }
-
-    const buf = this.receivedFile ? this.receivedFile.getBuffer() : new Uint8Array(0);
-    this.receivedFile = null;
-
-    return buf;
+      const totalChunks = Math.ceil(txinfo.size / (this.deviceChunkSize ?? CHUNK_SIZE));
+      const data = await this.receiveChunks(p_location, txinfo.txid, 0, totalChunks - 1, {
+        firstByteStart: 0, fileSize: txinfo.size, targetBytes: txinfo.size,
+      }, active, true);
+      await this.completeTransfer(active);
+      return data;
+    }, signal);
   }
 
-  async getSources(): Promise<Source[]> {
-    const result: Source[] = [];
-
-    await this.requestSources();
-    const message = await this.waitForMessage(MessageId.SourceLocations);
-    if (message) {
+  async getSources(signal?: AbortSignal): Promise<Source[]> {
+    return this.runOperation(async active => {
+      const result: Source[] = [];
+      const message = await this.requestMessage(MessageId.SourceLocations, () => this.requestSources(), active);
       for (const source of message.sources) {
-        //try to retrieve V2.x Database2/m.db first. If file doesn't exist or 0 size, retrieve V1.x /m.db
-        const databases = [`/${source}/Engine Library/Database2/m.db`, `/${source}/Engine Library/m.db`];
+        const databases = ['/' + source + '/Engine Library/Database2/m.db', '/' + source + '/Engine Library/m.db'];
         for (const database of databases) {
-          await this.requestStat(database);
-          const fstatMessage = await this.waitForMessage(MessageId.FileStat);
-          if (fstatMessage.size > 0) {
-            result.push({
-              name: source,
-              database: {
-                location: database,
-                size: fstatMessage.size,
-              },
-            });
+          const stat = await this.requestMessage(MessageId.FileStat, () => this.requestStat(database), active);
+          if (stat.size > 0) {
+            result.push({ name: source, database: { location: database, size: stat.size } });
             break;
           }
         }
       }
+      return result;
+    }, signal);
+  }
+
+  async getFileSize(p_location: string, signal?: AbortSignal): Promise<number> {
+    return this.runOperation(async active => {
+      const stat = await this.requestMessage(MessageId.FileStat, () => this.requestStat(p_location), active);
+      return stat.size;
+    }, signal);
+  }
+
+  async getFileRange(p_location: string, offset: number, length: number, signal?: AbortSignal): Promise<Buffer> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || !Number.isSafeInteger(offset + length)) {
+      throw new RangeError('File range offset and length must be nonnegative safe integers');
     }
-
-    return result;
-  }
-
-  /**
-   * Get the size of a file without downloading it
-   */
-  async getFileSize(p_location: string): Promise<number> {
-    await this.requestStat(p_location);
-    const fstatMessage = await this.waitForMessage(MessageId.FileStat);
-    return fstatMessage.size;
-  }
-
-  /**
-   * Read a specific byte range from a file
-   * This only downloads the chunks needed for the requested range
-   *
-   * @param p_location - File path on the device
-   * @param offset - Starting byte offset
-   * @param length - Number of bytes to read
-   * @returns Buffer containing the requested bytes
-   */
-  async getFileRange(p_location: string, offset: number, length: number): Promise<Buffer> {
-    await this.waitTillAvailable();
-    this._available = false;
-
-    try {
-      // `requestChunkRange` speaks in chunk indices, so a read that does not
-      // start at byte 0 cannot be turned into a request until the device's
-      // chunk size is known. In practice every parser reads the file header
-      // first (offset 0), which is chunk 0 at any chunk size and measures the
-      // size for free — so this probe is a rarely-taken fallback.
-      if (this.deviceChunkSize === null && offset > 0) {
-        await this.learnChunkSize(p_location);
-      }
-
-      // Request file transfer ID to get file size and txid
-      await this.requestFileTransferId(p_location);
-      const txinfo = await this.waitForMessage(MessageId.FileTransferId);
-
-      if (!txinfo || txinfo.size === 0) {
-        this.logger.warn(`${p_location} doesn't exist or is a streaming file`);
-        return Buffer.alloc(0);
-      }
-
-      // Clamp the requested range to file size
-      const fileSize = txinfo.size;
-      const endOffset = Math.min(offset + length, fileSize);
+    return this.runOperation(async active => {
+      if (length === 0) return Buffer.alloc(0);
+      if (this.deviceChunkSize === null && offset > 0) await this.learnChunkSize(p_location, active);
+      const txinfo = await this.transferInfo(p_location, active);
+      const endOffset = Math.min(offset + length, txinfo.size);
       const actualLength = Math.max(0, endOffset - offset);
-
-      if (actualLength === 0 || offset >= fileSize) {
-        await this.signalTransferComplete();
+      if (actualLength === 0) {
+        await this.completeTransfer(active);
         return Buffer.alloc(0);
       }
-
       const chunkSize = this.deviceChunkSize ?? CHUNK_SIZE;
       const startChunk = Math.floor(offset / chunkSize);
       const endChunk = Math.floor((endOffset - 1) / chunkSize);
       const firstByteStart = startChunk * chunkSize;
-
       const received = await this.receiveChunks(p_location, txinfo.txid, startChunk, endChunk, {
-        firstByteStart,
-        fileSize,
-        targetBytes: endOffset - firstByteStart,
-      });
-
-      await this.signalTransferComplete();
-
-      // Extract the exact bytes requested. Chunks are concatenated in arrival
-      // order rather than placed by their reported offset: the device answers a
-      // contiguous range sequentially over TCP, which is the same property
-      // getFile() has always relied on.
+        firstByteStart, fileSize: txinfo.size, targetBytes: endOffset - firstByteStart,
+      }, active);
+      await this.completeTransfer(active);
       const startInBuffer = offset - firstByteStart;
       return received.subarray(startInBuffer, startInBuffer + actualLength);
-    } finally {
-      this._available = true;
+    }, signal);
+  }
+
+  private async learnChunkSize(p_location: string, signal: AbortSignal): Promise<void> {
+    const txinfo = await this.transferInfo(p_location, signal);
+    if (txinfo.size > 0) {
+      await this.receiveChunks(p_location, txinfo.txid, 0, 0, {
+        firstByteStart: 0, fileSize: txinfo.size, targetBytes: 1,
+      }, signal);
     }
+    await this.completeTransfer(signal);
   }
 
-  /**
-   * Measure the device's chunk size with a self-contained transfer that pulls
-   * only chunk 0 of `p_location`.
-   *
-   * Leaves `deviceChunkSize` unset when the file is smaller than a single chunk,
-   * since that chunk says nothing about the device's size. Callers must already
-   * hold the availability lock.
-   */
-  private async learnChunkSize(p_location: string): Promise<void> {
-    await this.requestFileTransferId(p_location);
-    const txinfo = await this.waitForMessage(MessageId.FileTransferId);
-    if (!txinfo || txinfo.size === 0) return;
-
-    // `targetBytes: 1` resolves on the first chunk, whatever its size.
-    await this.receiveChunks(p_location, txinfo.txid, 0, 0, {
-      firstByteStart: 0,
-      fileSize: txinfo.size,
-      targetBytes: 1,
-    });
-    await this.signalTransferComplete();
-  }
-
-  /**
-   * Request chunks `p_startChunk`..`p_endChunk` and concatenate them in arrival
-   * order.
-   *
-   * Completion is decided on bytes, not on a chunk count: a count would hang
-   * whenever the requested range was computed with a smaller chunk size than
-   * the device actually uses, because fewer chunks then cover the same bytes.
-   */
-  private async receiveChunks(
-    p_location: string,
-    p_txid: number,
-    p_startChunk: number,
-    p_endChunk: number,
-    p_range: { firstByteStart: number; fileSize: number; targetBytes: number }
+  private receiveChunks(
+    _location: string,
+    txid: number,
+    startChunk: number,
+    endChunk: number,
+    range: { firstByteStart: number; fileSize: number; targetBytes: number },
+    signal: AbortSignal,
+    progress = false,
   ): Promise<Buffer> {
-    const chunks: Buffer[] = [];
+    signal.throwIfAborted();
+    // Small range reads retain only their requested bytes, and a device
+    // overrun cannot grow a full-download buffer past its announced size.
+    const output = Buffer.alloc(range.targetBytes);
     let total = 0;
-
-    const chunkPromise = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.removeListener('message', chunkListener);
-        reject(new Error(`Timeout reading range from '${p_location}'`));
-      }, DOWNLOAD_TIMEOUT);
-
-      const finish = () => {
-        clearTimeout(timeout);
-        this.removeListener('message', chunkListener);
-        resolve();
+    let lastProgress = -Infinity;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        this.off('message', listener);
+        signal.removeEventListener('abort', aborted);
+        if (error !== undefined) reject(error); else resolve(output);
       };
-
-      const chunkListener = (p_message: ServiceMessage<FileTransferData>) => {
-        if (p_message.id !== MessageId.FileTransferChunk) return;
-
-        const data: Buffer = p_message.message.data;
-        this.noteChunkSize(p_range.firstByteStart + total, data.byteLength, p_range.fileSize);
-
-        chunks.push(data);
-        total += data.byteLength;
-
-        // Either the requested bytes are covered, or the file ran out first
-        // (which happens whenever the range was over-requested past EOF).
-        if (total >= p_range.targetBytes || p_range.firstByteStart + total >= p_range.fileSize) {
-          finish();
+      const aborted = () => finish(signal.reason);
+      const listener = (message: ServiceMessage<FileTransferData>) => {
+        if (message.id !== MessageId.FileTransferChunk) return;
+        const data: Buffer = message.message.data;
+        if (!data.byteLength) return;
+        this.noteChunkSize(range.firstByteStart + total, data.byteLength, range.fileSize);
+        const copied = Math.min(data.byteLength, output.byteLength - total);
+        output.set(data.subarray(0, copied), total);
+        total += copied;
+        const complete = total === output.byteLength;
+        const now = performance.now();
+        if (progress && (complete || now - lastProgress >= 200)) {
+          lastProgress = now;
+          this.emit('fileTransferProgress', {
+            sizeLeft: output.byteLength - total, total: output.byteLength,
+            bytesDownloaded: total, percentComplete: total / output.byteLength * 100,
+          });
         }
+        if (complete) finish();
       };
-
-      this.addListener('message', chunkListener);
+      this.addListener('message', listener);
+      signal.addEventListener('abort', aborted, { once: true });
+      if (signal.aborted) { aborted(); return; }
+      void this.requestChunkRange(txid, startChunk, endChunk).catch(error => finish(error));
     });
-
-    await this.requestChunkRange(p_txid, p_startChunk, p_endChunk);
-    await chunkPromise;
-
-    return Buffer.concat(chunks);
   }
 
   ///////////////////////////////////////////////////////////////////////////
@@ -518,9 +522,10 @@ export class FileTransfer extends Service<FileTransferData> {
     await this.writeWithLength(ctx);
   }
 
-  public async waitTillAvailable(): Promise<void> {
-    while (!this._available) {
-      await sleep(250);
-    }
+  public async waitTillAvailable(signal?: AbortSignal): Promise<void> {
+    const lifetime = this.lifecycle.signal;
+    const active = signal ? AbortSignal.any([signal, lifetime]) : lifetime;
+    active.throwIfAborted();
+    while (this.pendingOperations > 0) await this.withAbort(this.operationTail, active);
   }
 }

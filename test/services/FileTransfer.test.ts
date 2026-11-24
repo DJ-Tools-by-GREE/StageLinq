@@ -109,29 +109,28 @@ describe('FileTransfer chunk parsing', () => {
 });
 
 describe('FileTransfer whole-file download', () => {
-  it('clamps a final chunk that overruns the declared file size', () => {
+  it('clamps a final chunk that overruns the declared file size', async () => {
     const fileSize = 10_000;
     const service = new FileTransfer('127.0.0.1', 0, {} as NetworkDevice);
-    const patch = service as unknown as { receivedFile: WriteContext; messageHandler(m: unknown): void };
-    patch.receivedFile = new WriteContext({ size: fileSize });
-
+    const patch = service as any;
     const chunk = fileContent(8192);
-    patch.messageHandler.call(service, {
-      id: MESSAGE_ID_FILE_TRANSFER_CHUNK,
-      message: { data: chunk, offset: 0, size: chunk.byteLength },
-    });
-
-    // Second chunk overruns: 8192 + 8192 > 10000.
-    expect(() =>
-      patch.messageHandler.call(service, {
+    patch.requestFileTransferId = async () => {
+      service.emit('message', { id: MESSAGE_ID_FILE_TRANSFER_ID, message: { size: fileSize, txid: 1 } });
+    };
+    patch.requestChunkRange = async () => {
+      service.emit('message', {
+        id: MESSAGE_ID_FILE_TRANSFER_CHUNK,
+        message: { data: chunk, offset: 0, size: chunk.byteLength },
+      });
+      service.emit('message', {
         id: MESSAGE_ID_FILE_TRANSFER_CHUNK,
         message: { data: chunk, offset: 8192, size: chunk.byteLength },
-      })
-    ).not.toThrow();
-
-    // Write position must land exactly on EOF, or getFile() would spin.
-    expect(patch.receivedFile.tell()).toBe(fileSize);
-    expect(patch.receivedFile.isEOF()).toBe(true);
+      });
+    };
+    patch.signalTransferComplete = async () => {};
+    const result = await service.getFile('/oversized.mp3');
+    expect(result.byteLength).toBe(fileSize);
+    expect(Buffer.from(result).equals(Buffer.concat([chunk, chunk]).subarray(0, fileSize))).toBe(true);
   });
 });
 

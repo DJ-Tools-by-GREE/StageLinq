@@ -114,6 +114,17 @@ StageLinq.devices.on('nowPlaying', (status) => {
 await StageLinq.connect();
 ```
 
+## Cancellable file transfers
+
+Full downloads and partial reads now share one serialized FileTransfer queue.
+Empty files, failed writes, timeouts and cancellation release their waits and
+buffers. Pass an optional AbortSignal to getFile or getFileRange; getFile also
+accepts a third maxBytes argument to reject an oversized file before allocation.
+An aborted or failed transfer closes its TCP stream to discard late chunks, and
+the next operation reconnects that service. Explicit disconnect cancels queued
+work and requires an explicit connect before reuse. See the
+[FileTransfer lifecycle/API guide](docs/filetransfer.md#cancellation-and-resource-limits).
+
 ## Events
 
 ```ts
@@ -191,7 +202,7 @@ npm run test:watch    # Watch mode
 npm run test:coverage # Coverage report
 ```
 
-**265 tests** across 23 test files.
+**284 tests** across 25 test files.
 
 ## Documentation
 
