@@ -5,141 +5,148 @@ import { WriteContext } from '../utils/WriteContext';
 import { Service } from './Service';
 import type { ServiceMessage } from '../types';
 
+/**
+ * The states we ask every device to push to us.
+ *
+ * Engine OS exposes roughly 115 states per deck. This list is deliberately a
+ * small allowlist rather than the whole namespace: most of what is left out is
+ * high-frequency transport data — playhead and track positions, scratching,
+ * slip mode, waveform views, loop regions and quick cues — which would flood
+ * the state channel every few milliseconds and tell a now-playing consumer
+ * nothing it does not already know.
+ *
+ * What is here is either transport state we act on (play, loaded, fader) or
+ * track metadata that has somewhere to go. This fork also subscribes to the
+ * sample rate, key index and pitch data consumed by StageLinq-WebView.
+ * See docs/statemap.md for the states
+ * that exist but are deliberately not subscribed to, and why.
+ */
 export const States = [
-  // Client preferences
-  StageLinqValue.ClientPreferencesLayerA,
-  StageLinqValue.ClientPreferencesPlayer,
-  StageLinqValue.ClientPreferencesPlayerJogColorA,
-  StageLinqValue.ClientPreferencesPlayerJogColorB,
-
-  // Engine global sync/master
-  StageLinqValue.EngineMasterMasterTempo,
-  StageLinqValue.EngineSyncNetworkMasterStatus,
-
-  // Deck role/state flags
-  StageLinqValue.EngineDeck1DeckIsMaster,
-  StageLinqValue.EngineDeck2DeckIsMaster,
-  StageLinqValue.EngineDeck3DeckIsMaster,
-  StageLinqValue.EngineDeck4DeckIsMaster,
-
-  // Mixer channel assignments/config
-  StageLinqValue.MixerChannelAssignment1,
-  StageLinqValue.MixerChannelAssignment2,
-  StageLinqValue.MixerChannelAssignment3,
-  StageLinqValue.MixerChannelAssignment4,
-  StageLinqValue.MixerNumberOfChannels,
-
-  // Mixer faders
+  // Mixer - all 4 channel faders and crossfader
   StageLinqValue.MixerCH1faderPosition,
   StageLinqValue.MixerCH2faderPosition,
   StageLinqValue.MixerCH3faderPosition,
   StageLinqValue.MixerCH4faderPosition,
   StageLinqValue.MixerCrossfaderPosition,
 
-  // Deck 1 telemetry
-  StageLinqValue.EngineDeck1CurrentBPM,
-  StageLinqValue.EngineDeck1TrackCurrentBPM,
-  StageLinqValue.EngineDeck1ExternalMixerVolume,
+  // Decks
   StageLinqValue.EngineDeck1Play,
   StageLinqValue.EngineDeck1PlayState,
   StageLinqValue.EngineDeck1PlayStatePath,
+  StageLinqValue.EngineDeck1TrackArtistName,
+  StageLinqValue.EngineDeck1TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck1TrackSongLoaded,
+  StageLinqValue.EngineDeck1TrackSongName,
+  StageLinqValue.EngineDeck1TrackTrackData,
+  StageLinqValue.EngineDeck1TrackTrackName,
+  StageLinqValue.EngineDeck1CurrentBPM,
+  StageLinqValue.EngineDeck1ExternalMixerVolume,
+  StageLinqValue.EngineDeck1TrackGenre,
+  StageLinqValue.EngineDeck1TrackCurrentKey,
+  StageLinqValue.EngineDeck1TrackTrackLength,
+  StageLinqValue.EngineDeck1TrackTrackURI,
+
+  StageLinqValue.EngineDeck2Play,
+  StageLinqValue.EngineDeck2PlayState,
+  StageLinqValue.EngineDeck2PlayStatePath,
+  StageLinqValue.EngineDeck2TrackArtistName,
+  StageLinqValue.EngineDeck2TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck2TrackSongLoaded,
+  StageLinqValue.EngineDeck2TrackSongName,
+  StageLinqValue.EngineDeck2TrackTrackData,
+  StageLinqValue.EngineDeck2TrackTrackName,
+  StageLinqValue.EngineDeck2CurrentBPM,
+  StageLinqValue.EngineDeck2ExternalMixerVolume,
+  StageLinqValue.EngineDeck2TrackGenre,
+  StageLinqValue.EngineDeck2TrackCurrentKey,
+  StageLinqValue.EngineDeck2TrackTrackLength,
+  StageLinqValue.EngineDeck2TrackTrackURI,
+
+  StageLinqValue.EngineDeck3Play,
+  StageLinqValue.EngineDeck3PlayState,
+  StageLinqValue.EngineDeck3PlayStatePath,
+  StageLinqValue.EngineDeck3TrackArtistName,
+  StageLinqValue.EngineDeck3TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck3TrackSongLoaded,
+  StageLinqValue.EngineDeck3TrackSongName,
+  StageLinqValue.EngineDeck3TrackTrackData,
+  StageLinqValue.EngineDeck3TrackTrackName,
+  StageLinqValue.EngineDeck3CurrentBPM,
+  StageLinqValue.EngineDeck3ExternalMixerVolume,
+  StageLinqValue.EngineDeck3TrackGenre,
+  StageLinqValue.EngineDeck3TrackCurrentKey,
+  StageLinqValue.EngineDeck3TrackTrackLength,
+  StageLinqValue.EngineDeck3TrackTrackURI,
+
+  StageLinqValue.EngineDeck4Play,
+  StageLinqValue.EngineDeck4PlayState,
+  StageLinqValue.EngineDeck4PlayStatePath,
+  StageLinqValue.EngineDeck4TrackArtistName,
+  StageLinqValue.EngineDeck4TrackTrackNetworkPath,
+  StageLinqValue.EngineDeck4TrackSongLoaded,
+  StageLinqValue.EngineDeck4TrackSongName,
+  StageLinqValue.EngineDeck4TrackTrackData,
+  StageLinqValue.EngineDeck4TrackTrackName,
+  StageLinqValue.EngineDeck4CurrentBPM,
+  StageLinqValue.EngineDeck4ExternalMixerVolume,
+  StageLinqValue.EngineDeck4TrackGenre,
+  StageLinqValue.EngineDeck4TrackCurrentKey,
+  StageLinqValue.EngineDeck4TrackTrackLength,
+  StageLinqValue.EngineDeck4TrackTrackURI,
+
+  StageLinqValue.ClientPreferencesLayerA,
+  StageLinqValue.ClientPreferencesPlayer,
+  StageLinqValue.ClientPreferencesPlayerJogColorA,
+  StageLinqValue.ClientPreferencesPlayerJogColorB,
+  StageLinqValue.EngineDeck1DeckIsMaster,
+  StageLinqValue.EngineDeck2DeckIsMaster,
+  StageLinqValue.EngineMasterMasterTempo,
+  StageLinqValue.EngineSyncNetworkMasterStatus,
+  StageLinqValue.MixerChannelAssignment1,
+  StageLinqValue.MixerChannelAssignment2,
+  StageLinqValue.MixerChannelAssignment3,
+  StageLinqValue.MixerChannelAssignment4,
+  StageLinqValue.MixerNumberOfChannels,
+
+  // Additional telemetry used by StageLinq-WebView.
+  StageLinqValue.EngineDeck3DeckIsMaster,
+  StageLinqValue.EngineDeck4DeckIsMaster,
+  StageLinqValue.EngineDeck1TrackCurrentBPM,
   StageLinqValue.EngineDeck1Speed,
   StageLinqValue.EngineDeck1SpeedNeutral,
   StageLinqValue.EngineDeck1SpeedOffsetDown,
   StageLinqValue.EngineDeck1SpeedOffsetUp,
   StageLinqValue.EngineDeck1SpeedRange,
   StageLinqValue.EngineDeck1SpeedState,
-  StageLinqValue.EngineDeck1TrackArtistName,
   StageLinqValue.EngineDeck1TrackCurrentKeyIndex,
   StageLinqValue.EngineDeck1TrackSampleRate,
-  StageLinqValue.EngineDeck1TrackSongLoaded,
-  StageLinqValue.EngineDeck1TrackSongName,
-  StageLinqValue.EngineDeck1TrackTrackData,
-  StageLinqValue.EngineDeck1TrackTrackLength,
-  StageLinqValue.EngineDeck1TrackTrackName,
-  StageLinqValue.EngineDeck1TrackTrackNetworkPath,
-  StageLinqValue.EngineDeck1TrackGenre,
-  StageLinqValue.EngineDeck1TrackCurrentKey,
-  StageLinqValue.EngineDeck1TrackTrackURI,
-
-  // Deck 2 telemetry
-  StageLinqValue.EngineDeck2CurrentBPM,
   StageLinqValue.EngineDeck2TrackCurrentBPM,
-  StageLinqValue.EngineDeck2ExternalMixerVolume,
-  StageLinqValue.EngineDeck2Play,
-  StageLinqValue.EngineDeck2PlayState,
-  StageLinqValue.EngineDeck2PlayStatePath,
   StageLinqValue.EngineDeck2Speed,
   StageLinqValue.EngineDeck2SpeedNeutral,
   StageLinqValue.EngineDeck2SpeedOffsetDown,
   StageLinqValue.EngineDeck2SpeedOffsetUp,
   StageLinqValue.EngineDeck2SpeedRange,
   StageLinqValue.EngineDeck2SpeedState,
-  StageLinqValue.EngineDeck2TrackArtistName,
   StageLinqValue.EngineDeck2TrackCurrentKeyIndex,
   StageLinqValue.EngineDeck2TrackSampleRate,
-  StageLinqValue.EngineDeck2TrackSongLoaded,
-  StageLinqValue.EngineDeck2TrackSongName,
-  StageLinqValue.EngineDeck2TrackTrackData,
-  StageLinqValue.EngineDeck2TrackTrackLength,
-  StageLinqValue.EngineDeck2TrackTrackName,
-  StageLinqValue.EngineDeck2TrackTrackNetworkPath,
-  StageLinqValue.EngineDeck2TrackGenre,
-  StageLinqValue.EngineDeck2TrackCurrentKey,
-  StageLinqValue.EngineDeck2TrackTrackURI,
-
-  // Deck 3 telemetry
-  StageLinqValue.EngineDeck3CurrentBPM,
   StageLinqValue.EngineDeck3TrackCurrentBPM,
-  StageLinqValue.EngineDeck3ExternalMixerVolume,
-  StageLinqValue.EngineDeck3Play,
-  StageLinqValue.EngineDeck3PlayState,
-  StageLinqValue.EngineDeck3PlayStatePath,
   StageLinqValue.EngineDeck3Speed,
   StageLinqValue.EngineDeck3SpeedNeutral,
   StageLinqValue.EngineDeck3SpeedOffsetDown,
   StageLinqValue.EngineDeck3SpeedOffsetUp,
   StageLinqValue.EngineDeck3SpeedRange,
   StageLinqValue.EngineDeck3SpeedState,
-  StageLinqValue.EngineDeck3TrackArtistName,
   StageLinqValue.EngineDeck3TrackCurrentKeyIndex,
   StageLinqValue.EngineDeck3TrackSampleRate,
-  StageLinqValue.EngineDeck3TrackSongLoaded,
-  StageLinqValue.EngineDeck3TrackSongName,
-  StageLinqValue.EngineDeck3TrackTrackData,
-  StageLinqValue.EngineDeck3TrackTrackLength,
-  StageLinqValue.EngineDeck3TrackTrackName,
-  StageLinqValue.EngineDeck3TrackTrackNetworkPath,
-  StageLinqValue.EngineDeck3TrackGenre,
-  StageLinqValue.EngineDeck3TrackCurrentKey,
-  StageLinqValue.EngineDeck3TrackTrackURI,
-
-  // Deck 4 telemetry
-  StageLinqValue.EngineDeck4CurrentBPM,
   StageLinqValue.EngineDeck4TrackCurrentBPM,
-  StageLinqValue.EngineDeck4ExternalMixerVolume,
-  StageLinqValue.EngineDeck4Play,
-  StageLinqValue.EngineDeck4PlayState,
-  StageLinqValue.EngineDeck4PlayStatePath,
   StageLinqValue.EngineDeck4Speed,
   StageLinqValue.EngineDeck4SpeedNeutral,
   StageLinqValue.EngineDeck4SpeedOffsetDown,
   StageLinqValue.EngineDeck4SpeedOffsetUp,
   StageLinqValue.EngineDeck4SpeedRange,
   StageLinqValue.EngineDeck4SpeedState,
-  StageLinqValue.EngineDeck4TrackArtistName,
   StageLinqValue.EngineDeck4TrackCurrentKeyIndex,
   StageLinqValue.EngineDeck4TrackSampleRate,
-  StageLinqValue.EngineDeck4TrackSongLoaded,
-  StageLinqValue.EngineDeck4TrackSongName,
-  StageLinqValue.EngineDeck4TrackTrackData,
-  StageLinqValue.EngineDeck4TrackTrackLength,
-  StageLinqValue.EngineDeck4TrackTrackName,
-  StageLinqValue.EngineDeck4TrackTrackNetworkPath,
-  StageLinqValue.EngineDeck4TrackGenre,
-  StageLinqValue.EngineDeck4TrackCurrentKey,
-  StageLinqValue.EngineDeck4TrackTrackURI,
-
 ];
 
 const MAGIC_MARKER = 'smaa';

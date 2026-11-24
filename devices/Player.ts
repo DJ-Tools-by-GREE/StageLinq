@@ -52,7 +52,7 @@ export class Player extends EventEmitter {
   private masterStatus: boolean = false;  // If this device has the master tempo
   private decks: Map<string, PlayerLayerState> = new Map();
   private lastTrackNetworkPath: Map<string, string> = new Map();
-  private queue: { [layer: string]: PlayerMessageQueue } = {};
+  private queue: {[layer: string]: PlayerMessageQueue} = {};
   private deviceId: string;
   private logger: Logger;
 
@@ -106,8 +106,8 @@ export class Player extends EventEmitter {
 
     const deck =
       (/PlayerJogColor[A-D]$/.test(name)) ? split[3].replace('PlayerJogColor', '')
-        : (/Engine\/Deck\d\//.test(name)) ? this.deckNumberToLayer(split[2])
-          : null;
+      : (/Engine\/Deck\d\//.test(name)) ? this.deckNumberToLayer(split[2])
+      : null;
 
     const cueData =
         (/PlayState$/.test(name)) ? { playState: json.state }

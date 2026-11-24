@@ -110,6 +110,8 @@ for anything that matches tracks against a catalogue.
 Engine OS publishes roughly 115 states per deck, but a device only sends the
 ones you ask for. This fork's `States` array in `services/StateMap.ts` subscribes
 to 24 states per deck to support WebView's timing, pitch and metadata display.
+The list follows upstream's 78 subscriptions, then appends the 38 additional
+entries needed by this fork. TrackLength and CurrentKey use upstream's entries.
 
 | Purpose | States |
 |---------|--------|

@@ -5,6 +5,15 @@ The 2026-11-24 integration merges `chrisle/StageLinq` main at `83f6723`
 commits since the common ancestor `044a6ca`. The package remains
 `@gree44/stagelinq` and its version is now 3.5.7.
 
+The follow-up overlap review confirmed that the fork added BeatInfo forwarding
+in `8ec9d06`, before upstream `8bf4368`, and TrackLength subscriptions in
+`f6e7b07`, before upstream `ed5042a`. Both now use Chris's implementation.
+StateMap follows the upstream list and ordering, with the 38 remaining
+WebView-specific subscriptions appended. Player follows the upstream source
+with the additional Track/CurrentBPM guard needed to keep track BPM distinct.
+The BeatInfo connection uses upstream's optional-service setup with the
+disconnect cancellation guards added during integration.
+
 The review covered StageLinq's README, CHANGELOG, TODO, all service/protocol
 guides and Wireshark guide, plus StageLinq-WebView's AGENTS.md, CLAUDE.md,
 README.md, memory.md, historical error log and archived project README.
@@ -59,18 +68,18 @@ and fetched upstream Git history supplied the package implementation.
 
 ## StageLinq-WebView compatibility
 
-The reviewed WebView checkout is `0372b20`. Its root dependency range is
-`^3.0.9`, its backend range is `^3.1.0`, and package-lock.json resolves the
-published `@gree44/stagelinq@3.1.0`. It does not link the sibling repository.
-Installing this local package or a future published version is a separate
-consumer dependency update.
+The initial WebView review used checkout `0372b20`, whose dependency lock
+selected published `@gree44/stagelinq@3.1.0`. In the follow-up, the user selected
+the local checkout workflow. Both workspaces and the lockfile now link this
+sibling StageLinq 3.5.7 checkout. Install this package's dependencies first and
+rebuild its dist output after source edits before rebuilding WebView.
 
 | Consumer behavior | Effect of this merge |
 |-------------------|----------------------|
 | Beat samples, elapsed time, Art-Net, OSC and replay | Preserve the aggregate event payload, sample-rate subscription and one forwarded beat per device update. |
 | Pitch, BPM, faders and loops | Preserve raw message envelopes, telemetry subscriptions, mutable States and enum exports. |
 | Audio/artwork downloads | Preserve getFileTransferService(net://uuid), getFile(path), Uint8Array results and percentComplete progress units. Larger firmware chunks gain upstream fixes. WebView still serializes downloads per device. |
-| Key display and recording | Confirmed with the compiled bridge. A newly subscribed CurrentKey message changes keyCamelot from 8A to Am and immediately publishes that state to subscribers. The next beat restores 8A from CurrentKeyIndex. A UI snapshot between those packets and recorded state updates can contain Am. |
+| Key display and recording | The follow-up fixes the transient Am/8A behavior. WebView normalizes named keys into Camelot, retains them across beats and uses CurrentKeyIndex/KEY_MAP as a fallback. It consumes matching accumulated PlayerStatus.key and clears old key state on track replacement, unload and reconnect. |
 | Connection watchdog | Retry delays now increase by 500 ms per attempt. Added cancellation prevents obsolete attempts from continuing after the watchdog disconnects the old instance. |
 | Database downloads | WebView sets downloadDbSources false. Other consumers enabling it must wait for database availability before querying, since ready no longer implies completion. |
 | New genre and track URI | Exposed by the package. WebView currently ignores these fields. |
@@ -87,11 +96,10 @@ actual partial status updates can omit metadata until the hardware sends it.
 External callers constructing PlayerStatus values may need to supply the new
 fields. Existing event consumers should continue to handle absent metadata.
 
-Two existing WebView limitations remain relevant to interpreting tests. Its
-stateChanged handler expects path/value data, while the package emits
-accumulated PlayerStatus. Active state handling uses raw message events. Live
-hot-cue positions are unavailable in its documented hardware workflow, and
-its offline cue cache is not yet consumed by the bridge.
+WebView consumes the key from accumulated PlayerStatus updates and uses raw
+message events for its other active state handling. Live hot-cue positions are
+unavailable in its documented hardware workflow, and its offline cue cache is
+not yet consumed by the bridge.
 
 ## Validation
 
@@ -109,9 +117,14 @@ its offline cue cache is not yet consumed by the bridge.
   aggregate/flattened beats, layer mapping, serialized downloads and progress,
   and singleton replacement. Both SQLite drivers opened and queried in-memory
   databases in the consumer environment.
-- The actual WebView checkout retains its published 3.1.0 lockfile. Validation
-  used /private/tmp/stagelinq-webview-validation-en7ok1gr. The installable
-  merged package is /private/tmp/gree44-stagelinq-3.5.7.tgz.
+- Initial consumer validation used
+  /private/tmp/stagelinq-webview-validation-en7ok1gr. The follow-up links the
+  actual WebView checkout to this repository and rebuilds both projects.
+  The installable merged package is /private/tmp/gree44-stagelinq-3.5.7.tgz.
+- The upstream-alignment follow-up passes all 265 package tests. In the actual
+  linked WebView checkout, clean npm ci, the full production build, 18 focused
+  key regressions and 11 broader bridge checks pass. The CurrentKey sequence
+  stays 8A before the named-key message, after it and after the next beat.
 - Live Denon hardware, real firmware transfers, CI and npm publication have
   not been exercised. StateMap connection failures are logged but leave the
   device marked connected, so WebView's existing watchdog remains relevant.

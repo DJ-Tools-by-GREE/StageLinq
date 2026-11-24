@@ -2,6 +2,7 @@
 
 ## Fork integration of upstream v3.5.7 — 2026-11-24
 
+- Follow the upstream StateMap and Player implementations for overlapping BeatInfo and TrackLength support, retaining the extra WebView telemetry and track BPM distinction.
 - Merge upstream through `83f6723`, keeping the `@gree44/stagelinq` package name.
 - Combine upstream metadata subscriptions with all existing WebView telemetry, including sample rate, track BPM, pitch and deck master states.
 - Use one optional BeatInfo connection and preserve the fork's separate track BPM mapping.
